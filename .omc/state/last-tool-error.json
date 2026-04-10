@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"export GOGS_AI_TOKEN && python3 /home/xiaodao/.claude/skills/gogs-push/gogs_push_skill.py /home/xiaodao/vibe-kanban-plus vibe-kanban-plus ALL-AI\",\"timeout\":120000,\"description\":\"Push to Go...",
+  "error": "Exit code 1\n开始推送项目 /home/xiaodao/vibe-kanban-plus 到Gogs仓库 ALL-AI/vibe-kanban-plus\n检测到已存在的 Git 仓库，跳过初始化\n添加文件失败：\n无法创建初始提交",
+  "timestamp": "2026-04-10T14:50:53.861Z",
+  "retry_count": 1
+}

@@ -12,6 +12,11 @@
 - [需求文档](#需求文档)
 - [架构概览](#架构概览)
 - [部署文档](#部署文档)
+  - [方式零：一键构建脚本（推荐）](#方式零一键构建脚本推荐)
+  - [方式一：手动本地编译](#方式一手动本地编译)
+  - [方式二：集成到其他 Axum 项目](#方式二集成到其他-axum-项目)
+  - [方式三：Docker 部署](#方式三docker-部署)
+  - [方式四：反向代理 + HTTPS](#方式四反向代理--https生产环境)
 - [配置参考](#配置参考)
 - [API 接口](#api-接口)
 - [开发指南](#开发指南)
@@ -165,42 +170,99 @@ pub fn verify_password(password: &str, hash_str: &str) -> bool;
 
 ## 部署文档
 
-### 方式一：集成到 Vibe Kanban（推荐）
+### 方式零：一键构建脚本（推荐）
+
+Vibe Kanban 主仓库提供了 `build-with-auth-wall.sh`，**无需手动修改任何代码**，一条命令完成所有步骤：自动拉取 auth-wall、检测并安装依赖、编译前端和后端、输出成品路径，编译结束后自动清理 auth-wall 源码保持主仓库干净。
 
 #### 前置条件
 
-- Rust nightly (>= nightly-2025-12-04)
+- 已克隆 [Vibe Kanban](https://github.com/yangfei957/vibe-kanban) 源码
+- `git`（用于克隆 auth-wall）
+- Node.js >= 20（前端构建）
+- Rust nightly（如未安装，脚本会自动通过 `rustup` 安装）
+
+#### 使用方法
+
+```bash
+# 进入 vibe-kanban 仓库目录
+cd /path/to/vibe-kanban
+
+# 运行一键构建脚本，传入源码目录
+./build-with-auth-wall.sh /path/to/vibe-kanban
+```
+
+脚本执行完成后会输出成品路径，例如：
+
+```
+📁 成品文件位于:
+   npx-cli/dist/linux-x64/
+
+📍 二进制文件（未打包）:
+   server:          target/release/server
+   set-password:    target/release/set-password
+   vibe-kanban-mcp: target/release/vibe-kanban-mcp
+```
+
+#### 可选环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `AUTH_WALL_REPO` | `https://github.com/yangfei957/vibe-kanban-plus.git` | auth-wall 仓库地址 |
+| `AUTH_WALL_BRANCH` | `main` | auth-wall 分支 |
+| `SKIP_FRONTEND` | `false` | 跳过前端构建（仅重新编译后端时有用） |
+| `CARGO_TARGET_DIR` | `<源码目录>/target` | 自定义 Cargo 输出目录 |
+
+```bash
+# 示例：跳过前端构建，使用自定义分支
+SKIP_FRONTEND=true AUTH_WALL_BRANCH=dev ./build-with-auth-wall.sh ~/code/vibe-kanban
+```
+
+#### 构建完成后设置密码
+
+```bash
+# 运行密码设置工具（交互式）
+target/release/set-password
+
+# 启动带认证的服务
+target/release/server
+```
+
+---
+
+### 方式一：手动本地编译
+
+如果你不使用一键脚本，也可以手动完成以下步骤。
+
+> **注意：** Vibe Kanban 主仓库已内置 auth-wall 集成代码（`crates/server/Cargo.toml` 中的 path 依赖和 `routes/mod.rs` 中的中间件）。你只需克隆 auth-wall 源码、编译、设置密码即可，无需修改任何代码。
+
+#### 前置条件
+
+- Rust nightly >= nightly-2025-12-04
+- Node.js >= 20 + pnpm
 - Vibe Kanban 源码
 
-#### 步骤 1：添加 Git 依赖
+#### 步骤 1：克隆 auth-wall 源码
 
-在 Vibe Kanban 的 `crates/server/Cargo.toml` 中：
-
-```toml
-[dependencies]
-auth-wall = { git = "https://github.com/yangfei957/vibe-kanban-plus.git", optional = true }
-
-[features]
-auth-wall = ["dep:auth-wall"]
+```bash
+cd /path/to/vibe-kanban
+git clone https://github.com/yangfei957/vibe-kanban-plus.git crates/auth-wall
 ```
 
-#### 步骤 2：集成中间件
+#### 步骤 2：构建前端
 
-在服务器路由代码中添加（已通过 `#[cfg(feature = "auth-wall")]` 条件编译）：
-
-```rust
-#[cfg(feature = "auth-wall")]
-let app = {
-    let auth_state = auth_wall_state();
-    app.merge(auth_wall::auth_wall_routes(auth_state.clone()))
-        .layer(axum::middleware::from_fn_with_state(
-            auth_state,
-            auth_wall::auth_wall_middleware,
-        ))
-};
+```bash
+pnpm install
+(cd packages/local-web && pnpm run build)
 ```
 
-#### 步骤 3：设置密码
+#### 步骤 3：编译后端（启用 auth-wall feature）
+
+```bash
+cargo build --release --bin server --features auth-wall
+cargo build --release --bin set-password --features auth-wall
+```
+
+#### 步骤 4：设置密码
 
 ```bash
 # 编译并运行密码设置工具
@@ -212,18 +274,23 @@ cargo run --bin set-password
 # ✅ Password has been set successfully!
 ```
 
-#### 步骤 4：启动服务
+#### 步骤 5：启动服务
 
 ```bash
-# 启用 auth-wall feature 编译并运行
-cargo run --bin server --features auth-wall
+./target/release/server
 ```
 
-#### 步骤 5：验证
+#### 步骤 6：验证
 
 1. 打开浏览器访问 `http://localhost:<port>`
 2. 应自动跳转到 `/auth-wall/login` 登录页面
 3. 输入密码登录后跳转回主页面
+
+#### 步骤 7：清理 auth-wall（保持源码干净）
+
+```bash
+rm -rf crates/auth-wall
+```
 
 ---
 

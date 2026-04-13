@@ -5,7 +5,6 @@ edition = "2024"
 description = "A drop-in authentication gate (password wall) plugin for Axum-based web applications"
 license = "Apache-2.0"
 repository = "https://github.com/yangfei957/vibe-kanban-plus"
-readme = "README.md"
 
 [[bin]]
 name = "set-password"

@@ -137,7 +137,7 @@ echo ""
 info "=== 步骤 2/5：安装 auth-wall 插件（从本地项目复制）==="
 
 # 验证本地项目包含 auth-wall 源码
-[[ ! -f "$PROJECT_ROOT/Cargo.toml" ]] && fail "在 $PROJECT_ROOT 中找不到 Cargo.toml，无法定位 auth-wall 源码。"
+[[ ! -f "$PROJECT_ROOT/Cargo.toml" ]] && fail "在 $PROJECT_ROOT 中找不到 Cargo.toml，请确认脚本位于正确的项目目录中。"
 
 if [[ -d "$AUTH_WALL_DIR" ]]; then
   warn "$AUTH_WALL_DIR 已存在，将备份后重新复制..."
@@ -146,7 +146,7 @@ fi
 
 mkdir -p "$AUTH_WALL_DIR"
 info "复制 auth-wall 源码 -> $AUTH_WALL_DIR ..."
-cp -r "$PROJECT_ROOT/Cargo.toml" "$AUTH_WALL_DIR/"
+cp "$PROJECT_ROOT/Cargo.toml" "$AUTH_WALL_DIR/"
 cp -r "$PROJECT_ROOT/src" "$AUTH_WALL_DIR/"
 [[ -f "$PROJECT_ROOT/rust-toolchain.toml" ]] && cp "$PROJECT_ROOT/rust-toolchain.toml" "$AUTH_WALL_DIR/"
 [[ -f "$PROJECT_ROOT/rustfmt.toml" ]] && cp "$PROJECT_ROOT/rustfmt.toml" "$AUTH_WALL_DIR/"

@@ -60,7 +60,8 @@ vibe-kanban-plus/
 ├── plugins/
 │   └── auth-wall/          # auth-wall 插件
 │       ├── Cargo.toml      # 插件 crate 配置
-│       ├── install.sh      # 插件专属安装脚本
+│       ├── plugin.conf     # 插件构建配置（features、bins）
+│       ├── install.sh      # 插件安装/卸载脚本
 │       └── src/
 │           ├── lib.rs
 │           ├── password.rs
@@ -73,11 +74,12 @@ vibe-kanban-plus/
 
 ### 插件规范
 
-每个插件是 `plugins/` 下的一个子目录，必须包含：
+每个插件是 `plugins/` 下的一个子目录，包含以下文件：
 
 | 文件 | 必需 | 说明 |
 |------|------|------|
-| `install.sh` | ✅ | 插件安装脚本，接受 `<vibe-kanban 目录>` 作为第一个参数 |
+| `install.sh` | ✅ | 插件安装/卸载脚本，支持 `install` 和 `uninstall` 两个子命令 |
+| `plugin.conf` | 推荐 | 声明插件需要的 Cargo features 和额外 bins |
 | `Cargo.toml` | 推荐 | Rust crate 配置（如果插件包含 Rust 代码） |
 | `src/` | 推荐 | 源代码目录 |
 
@@ -86,18 +88,41 @@ vibe-kanban-plus/
 ```
 用户执行 scripts/install.sh
     │
-    ├── 检测编译环境（Rust、Node.js、pnpm）
-    ├── 构建前端（可跳过）
+    ├── Phase 1: 环境检测与依赖安装
+    │   ├── Git
+    │   ├── Rust nightly-2025-12-04（自动安装）
+    │   ├── Node.js >= 20
+    │   └── pnpm（自动安装）
     │
-    ├── 遍历指定插件（或全部插件）
-    │   ├── 调用 plugins/<name>/install.sh
-    │   │   ├── 复制源码到 vibe-kanban/crates/<name>/
-    │   │   └── 编译（可跳过）
-    │   └── 记录结果
+    ├── Phase 2: 前端构建（可跳过）
+    │   ├── pnpm install
+    │   └── pnpm run build
     │
-    ├── 打包成品
-    └── EXIT 时自动清理所有插件源码
+    ├── Phase 3: 安装插件源码
+    │   └── 调用 plugins/<name>/install.sh install <VK_DIR>
+    │       └── 复制源码到 vibe-kanban/crates/<name>/
+    │
+    ├── Phase 4: 集中编译（可跳过）
+    │   ├── 从 plugin.conf 收集 features 和 bins
+    │   ├── cargo build --release --bin server --features <all>
+    │   ├── cargo build --release --bin <extra-bins> --features <all>
+    │   └── cargo build --release --bin vibe-kanban-mcp（如存在）
+    │
+    ├── Phase 5: 打包成品
+    │   └── zip 到 npx-cli/dist/<platform>/
+    │
+    └── Phase 6: 清理插件源码
+        └── 调用 plugins/<name>/install.sh uninstall <VK_DIR>
+            └── 移除 vibe-kanban/crates/<name>/，保持源码干净
 ```
+
+### 职责分离
+
+| 角色 | 职责 |
+|------|------|
+| **主脚本** `scripts/install.sh` | 环境检测、前端构建、集中编译、打包、统一调度插件安装/卸载 |
+| **插件脚本** `plugins/<name>/install.sh` | 仅负责自身源码的复制（install）和清理（uninstall） |
+| **插件配置** `plugins/<name>/plugin.conf` | 声明插件需要的编译参数（features、bins） |
 
 ---
 
@@ -209,9 +234,10 @@ let app = Router::new()
 ## 添加新插件
 
 1. 在 `plugins/` 下创建新目录，例如 `plugins/my-plugin/`
-2. 创建 `plugins/my-plugin/install.sh`（必需），脚本接受 vibe-kanban 源码目录作为第一个参数
-3. 如果包含 Rust 代码，创建 `Cargo.toml` 并在根 `Cargo.toml` 的 `workspace.members` 中注册
-4. 主安装脚本会自动发现 `plugins/` 下所有包含 `install.sh` 的子目录
+2. 创建 `plugins/my-plugin/install.sh`（必需），支持 `install` 和 `uninstall` 两个子命令
+3. 创建 `plugins/my-plugin/plugin.conf`（推荐），声明编译参数
+4. 如果包含 Rust 代码，创建 `Cargo.toml` 并在根 `Cargo.toml` 的 `workspace.members` 中注册
+5. 主安装脚本会自动发现 `plugins/` 下所有包含 `install.sh` 的子目录
 
 ### install.sh 模板
 
@@ -219,12 +245,40 @@ let app = Router::new()
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ $# -lt 1 ]] && { echo "用法: $0 <vibe-kanban 源码目录>"; exit 1; }
-VK_DIR="$(cd "$1" && pwd)"
+[[ $# -lt 2 ]] && { echo "用法: $0 {install|uninstall} <vibe-kanban 源码目录>"; exit 1; }
+ACTION="$1"
+VK_DIR="$(cd "$2" && pwd)"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_DIR="$VK_DIR/crates/my-plugin"
 
-# 你的安装逻辑...
-echo "安装 my-plugin 到 $VK_DIR"
+case "$ACTION" in
+    install)
+        mkdir -p "$TARGET_DIR"
+        cp -r "$PLUGIN_DIR/src" "$TARGET_DIR/"
+        cp "$PLUGIN_DIR/Cargo.toml" "$TARGET_DIR/"
+        echo "✅ my-plugin 已安装到 $TARGET_DIR"
+        ;;
+    uninstall)
+        rm -rf "$TARGET_DIR"
+        echo "✅ my-plugin 已从 $VK_DIR 中清理"
+        ;;
+    *)
+        echo "未知动作: $ACTION"; exit 1
+        ;;
+esac
+```
+
+### plugin.conf 模板
+
+```bash
+# 添加到 cargo build 的 feature flags（空格分隔）
+CARGO_FEATURES="my-plugin"
+
+# 需要编译的额外二进制文件（空格分隔）
+CARGO_BINS="my-tool"
+
+# 插件安装到 vibe-kanban 的目标目录（相对于 VK_DIR）
+INSTALL_DIR="crates/my-plugin"
 ```
 
 ---

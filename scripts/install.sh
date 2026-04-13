@@ -2,7 +2,13 @@
 # ============================================================================
 # install.sh — vibe-kanban-plus 主安装脚本
 #
-# 统一入口，调度各插件的安装脚本。
+# 统一入口，负责：
+#   1. 环境检测与依赖安装（Rust nightly、Node.js、pnpm）
+#   2. 前端构建
+#   3. 调度各插件的 install 动作（仅复制源码）
+#   4. 集中编译后端（收集所有插件的 features）
+#   5. 打包成品
+#   6. 调度各插件的 uninstall 动作（清理源码，避免污染 vibe-kanban）
 #
 # 用法：
 #   ./scripts/install.sh <vibe-kanban 源码目录> [插件名 ...]
@@ -131,9 +137,10 @@ shift
 
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$VK_DIR/target}"
 SKIP_FRONTEND="${SKIP_FRONTEND:-false}"
+SKIP_BUILD="${SKIP_BUILD:-false}"
 
 # 确定要安装的插件列表
-AVAILABLE_PLUGINS=($(discover_plugins))
+mapfile -t AVAILABLE_PLUGINS < <(discover_plugins | tr ' ' '\n')
 if [[ ${#AVAILABLE_PLUGINS[@]} -eq 0 ]]; then
     fail "未发现任何可用插件。请确认 $PLUGINS_DIR 目录下有包含 install.sh 的插件子目录。"
 fi
@@ -152,7 +159,21 @@ else
     SELECTED_PLUGINS=("${AVAILABLE_PLUGINS[@]}")
 fi
 
-# ── 环境依赖检测 ────────────────────────────────────────────────────────────
+# ── 安全网：无论脚本如何退出都清理插件源码 ──────────────────────────────────
+# 正常退出时在脚本末尾显式调用 uninstall；异常退出时由此 trap 兜底清理
+cleanup_on_exit() {
+    for plugin in "${SELECTED_PLUGINS[@]}"; do
+        local script="$PLUGINS_DIR/$plugin/install.sh"
+        if [[ -f "$script" ]]; then
+            bash "$script" uninstall "$VK_DIR" 2>/dev/null || true
+        fi
+    done
+}
+trap cleanup_on_exit EXIT
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 1: 环境检测与依赖安装
+# ════════════════════════════════════════════════════════════════════════════
 echo ""
 echo "============================================================"
 echo -e "${BOLD}  vibe-kanban-plus 插件安装器${NC}"
@@ -163,13 +184,14 @@ info "目标源码目录: $VK_DIR"
 info "待安装插件: ${SELECTED_PLUGINS[*]}"
 echo ""
 
-info "=== 检测编译环境 ==="
+info "=== Phase 1: 检测编译环境 ==="
 
 # --- Git ---
 command -v git >/dev/null 2>&1 || fail "缺少 git，请先安装 git。"
 ok "git: $(git --version)"
 
 # --- Rust / Cargo ---
+# 参考 vibe-kanban 的 rust-toolchain.toml：nightly-2025-12-04
 REQUIRED_TOOLCHAIN="nightly-2025-12-04"
 
 if ! command -v rustup >/dev/null 2>&1; then
@@ -187,6 +209,7 @@ fi
 ok "Rust 工具链: $REQUIRED_TOOLCHAIN"
 
 # --- Node.js ---
+# 参考 vibe-kanban README：Node.js >= 20
 MIN_NODE_MAJOR=20
 if command -v node >/dev/null 2>&1; then
     NODE_VERSION=$(node -v | sed 's/v//')
@@ -200,6 +223,7 @@ else
 fi
 
 # --- pnpm ---
+# 参考 vibe-kanban README：pnpm >= 8
 if ! command -v pnpm >/dev/null 2>&1; then
     warn "未检测到 pnpm，正在通过 corepack 启用..."
     if command -v corepack >/dev/null 2>&1; then
@@ -212,79 +236,132 @@ fi
 ok "pnpm: $(pnpm --version)"
 echo ""
 
-# ── 前端构建 ────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 2: 前端构建
+# ════════════════════════════════════════════════════════════════════════════
 if [[ "$SKIP_FRONTEND" != "true" ]]; then
-    info "=== 安装前端依赖 ==="
-    (cd "$VK_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
+    info "=== Phase 2: 构建前端 ==="
+    info "安装前端依赖..."
+    (cd "$VK_DIR" && { pnpm install --frozen-lockfile 2>/dev/null || pnpm install; })
     ok "前端依赖安装完成。"
     echo ""
-    info "=== 构建前端 ==="
+    info "构建前端..."
     (cd "$VK_DIR/packages/local-web" && pnpm run build)
     ok "前端构建完成。"
 else
-    info "跳过前端构建（SKIP_FRONTEND=true）"
+    info "=== Phase 2: 跳过前端构建（SKIP_FRONTEND=true）==="
 fi
 echo ""
 
-# ── 清理列表（统一在 EXIT 时清理所有已安装的插件目录） ──────────────────────
-CLEANUP_DIRS=()
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 3: 安装所有插件源码
+# ════════════════════════════════════════════════════════════════════════════
+info "=== Phase 3: 安装插件源码 ==="
 
-cleanup_all() {
-    for dir in "${CLEANUP_DIRS[@]}"; do
-        if [[ -d "$dir" ]]; then
-            info "清理 $(basename "$dir") 源码..."
-            rm -rf "$dir"
-            ok "$(basename "$dir") 已从源码目录中移除。"
-        fi
-    done
-    if [[ ${#CLEANUP_DIRS[@]} -gt 0 ]]; then
-        ok "所有插件源码已清理，目标仓库保持干净。"
-    fi
-}
-trap cleanup_all EXIT
-
-# ── 依次安装各插件 ──────────────────────────────────────────────────────────
-export VKP_MANAGED=true  # 告知子脚本由主脚本管理清理
-export CARGO_TARGET_DIR
-export SKIP_FRONTEND
-
-INSTALLED=0
-FAILED=0
+INSTALLED_PLUGINS=()   # 成功安装的插件列表
+FAILED_PLUGINS=()      # 安装失败的插件列表
 
 for plugin in "${SELECTED_PLUGINS[@]}"; do
     echo ""
     echo "────────────────────────────────────────────────────────────"
-    info "安装插件: ${BOLD}$plugin${NC}"
+    info "安装插件源码: ${BOLD}$plugin${NC}"
     echo "────────────────────────────────────────────────────────────"
 
     PLUGIN_INSTALL_SCRIPT="$PLUGINS_DIR/$plugin/install.sh"
 
-    # 记录要清理的目录
-    CLEANUP_DIRS+=("$VK_DIR/crates/$plugin")
-
-    if bash "$PLUGIN_INSTALL_SCRIPT" "$VK_DIR"; then
-        ok "插件 $plugin 安装成功！"
-        INSTALLED=$((INSTALLED + 1))
+    if bash "$PLUGIN_INSTALL_SCRIPT" install "$VK_DIR"; then
+        ok "插件 $plugin 源码安装成功！"
+        INSTALLED_PLUGINS+=("$plugin")
     else
-        warn "插件 $plugin 安装失败！"
-        FAILED=$((FAILED + 1))
+        warn "插件 $plugin 源码安装失败！"
+        FAILED_PLUGINS+=("$plugin")
     fi
 done
-
 echo ""
 
-# ── 额外编译任务（非插件特定的） ────────────────────────────────────────────
-if [[ "${SKIP_BUILD:-false}" != "true" ]]; then
-    # 编译 MCP binary（如果存在）
+# 如果没有任何插件安装成功，跳过编译
+if [[ ${#INSTALLED_PLUGINS[@]} -eq 0 ]]; then
+    fail "没有任何插件安装成功，终止。"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 4: 集中编译（收集所有插件的 features 和 bins）
+# ════════════════════════════════════════════════════════════════════════════
+if [[ "$SKIP_BUILD" != "true" ]]; then
+    info "=== Phase 4: 集中编译 ==="
+
+    # 收集所有已安装插件的 features 和额外 bins
+    ALL_FEATURES=()
+    ALL_EXTRA_BINS=()
+
+    for plugin in "${INSTALLED_PLUGINS[@]}"; do
+        PLUGIN_CONF="$PLUGINS_DIR/$plugin/plugin.conf"
+        if [[ -f "$PLUGIN_CONF" ]]; then
+            # 在子 shell 中读取配置，避免变量污染
+            CARGO_FEATURES=""
+            CARGO_BINS=""
+            # shellcheck source=/dev/null
+            source "$PLUGIN_CONF"
+            # 收集 features
+            if [[ -n "$CARGO_FEATURES" ]]; then
+                for f in $CARGO_FEATURES; do
+                    ALL_FEATURES+=("$f")
+                done
+            fi
+            # 收集额外 bins
+            if [[ -n "$CARGO_BINS" ]]; then
+                for b in $CARGO_BINS; do
+                    ALL_EXTRA_BINS+=("$b")
+                done
+            fi
+        else
+            info "插件 $plugin 没有 plugin.conf，跳过编译配置收集。"
+        fi
+    done
+
+    FEATURES_CSV=""
+    if [[ ${#ALL_FEATURES[@]} -gt 0 ]]; then
+        FEATURES_CSV=$(IFS=,; echo "${ALL_FEATURES[*]}")
+        info "收集到的 features: $FEATURES_CSV"
+    fi
+    if [[ ${#ALL_EXTRA_BINS[@]} -gt 0 ]]; then
+        info "收集到的额外 bins: ${ALL_EXTRA_BINS[*]}"
+    fi
+    echo ""
+
+    # 4a. 编译 server（带所有插件 features）
+    info "构建 Rust 后端 server..."
+    if [[ -n "$FEATURES_CSV" ]]; then
+        (cd "$VK_DIR" && cargo build --release --bin server --features "$FEATURES_CSV")
+        ok "server 编译完成（features: $FEATURES_CSV）。"
+    else
+        (cd "$VK_DIR" && cargo build --release --bin server)
+        ok "server 编译完成。"
+    fi
+
+    # 4b. 编译插件声明的额外 bins（带所有插件 features）
+    for bin_name in "${ALL_EXTRA_BINS[@]}"; do
+        info "构建 $bin_name..."
+        if [[ -n "$FEATURES_CSV" ]]; then
+            (cd "$VK_DIR" && cargo build --release --bin "$bin_name" --features "$FEATURES_CSV")
+        else
+            (cd "$VK_DIR" && cargo build --release --bin "$bin_name")
+        fi
+        ok "$bin_name 编译完成。"
+    done
+
+    # 4c. 编译 vibe-kanban 自身的其他标准 bins（不需要插件 features）
     if (cd "$VK_DIR" && cargo metadata --format-version=1 2>/dev/null | grep -q '"name":"vibe-kanban-mcp"'); then
         info "构建 vibe-kanban-mcp..."
         (cd "$VK_DIR" && cargo build --release --bin vibe-kanban-mcp) && ok "vibe-kanban-mcp 编译完成。"
     fi
-fi
 
-# ── 打包成品 ────────────────────────────────────────────────────────────────
-if [[ "${SKIP_BUILD:-false}" != "true" ]]; then
-    info "=== 打包成品 ==="
+    echo ""
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Phase 5: 打包成品
+    # ════════════════════════════════════════════════════════════════════════
+    info "=== Phase 5: 打包成品 ==="
 
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
@@ -302,7 +379,9 @@ if [[ "${SKIP_BUILD:-false}" != "true" ]]; then
     DIST_DIR="$VK_DIR/npx-cli/dist/$PLATFORM"
     mkdir -p "$DIST_DIR"
 
-    for bin_name in server set-password vibe-kanban-mcp review; do
+    # 标准 bins + 插件声明的 bins
+    PACKAGE_BINS=("server" "vibe-kanban-mcp" "review" "${ALL_EXTRA_BINS[@]}")
+    for bin_name in "${PACKAGE_BINS[@]}"; do
         BIN_PATH="$CARGO_TARGET_DIR/release/$bin_name"
         if [[ -f "$BIN_PATH" ]]; then
             case "$bin_name" in
@@ -319,14 +398,37 @@ if [[ "${SKIP_BUILD:-false}" != "true" ]]; then
     echo ""
     echo "📁 成品文件位于: $DIST_DIR/"
     ls -lh "$DIST_DIR/" 2>/dev/null || true
+
+else
+    info "=== Phase 4: 跳过编译（SKIP_BUILD=true）==="
+    info "=== Phase 5: 跳过打包（SKIP_BUILD=true）==="
 fi
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 6: 清理所有插件源码（避免污染 vibe-kanban）
+# ════════════════════════════════════════════════════════════════════════════
+info "=== Phase 6: 清理插件源码 ==="
+
+for plugin in "${INSTALLED_PLUGINS[@]}"; do
+    PLUGIN_INSTALL_SCRIPT="$PLUGINS_DIR/$plugin/install.sh"
+    bash "$PLUGIN_INSTALL_SCRIPT" uninstall "$VK_DIR" || warn "插件 $plugin 清理失败，请手动检查。"
+done
+
+ok "所有插件源码已清理，vibe-kanban 源代码保持干净。"
+
+# 清理完成后移除 EXIT trap（不需要再兜底清理了）
+trap - EXIT
+
+echo ""
 
 # ── 总结 ────────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================================"
-ok "安装完成！已安装 $INSTALLED 个插件，失败 $FAILED 个。"
+ok "安装完成！成功 ${#INSTALLED_PLUGINS[@]} 个，失败 ${#FAILED_PLUGINS[@]} 个。"
 echo "============================================================"
 
-if [[ $FAILED -gt 0 ]]; then
+if [[ ${#FAILED_PLUGINS[@]} -gt 0 ]]; then
+    warn "以下插件安装失败: ${FAILED_PLUGINS[*]}"
     exit 1
 fi

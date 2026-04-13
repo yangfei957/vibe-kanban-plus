@@ -8,7 +8,7 @@
 #   ./build-with-auth-wall.sh /path/to/vibe-kanban
 #
 # 脚本流程：
-#   1. 克隆 auth-wall 源码到 crates/auth-wall/
+#   1. 从本地项目复制 auth-wall 源码到 vibe-kanban 的 crates/auth-wall/
 #   2. 检测并安装缺失的编译依赖（Rust nightly、Node.js、pnpm）
 #   3. 编译前端 + 后端（含 auth-wall feature）
 #   4. 输出成品文件路径
@@ -29,9 +29,11 @@ ok()    { echo -e "${GREEN}✅ $*${NC}"; }
 warn()  { echo -e "${YELLOW}⚠️  $*${NC}"; }
 fail()  { echo -e "${RED}❌ $*${NC}"; exit 1; }
 
+# ── 定位项目根目录（脚本所在目录的上级） ─────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # ── 参数解析 ────────────────────────────────────────────────────────────────
-AUTH_WALL_REPO="${AUTH_WALL_REPO:-https://github.com/yangfei957/vibe-kanban-plus.git}"
-AUTH_WALL_BRANCH="${AUTH_WALL_BRANCH:-main}"
 SKIP_FRONTEND="${SKIP_FRONTEND:-false}"
 
 usage() {
@@ -39,14 +41,11 @@ usage() {
 用法: $0 <vibe-kanban 源码目录>
 
 环境变量（可选）：
-  AUTH_WALL_REPO     auth-wall Git 仓库地址（默认：$AUTH_WALL_REPO）
-  AUTH_WALL_BRANCH   auth-wall 分支（默认：$AUTH_WALL_BRANCH）
   SKIP_FRONTEND      跳过前端构建（默认：false）
   CARGO_TARGET_DIR   自定义 Cargo 输出目录
 
 示例：
   $0 ~/code/vibe-kanban
-  AUTH_WALL_BRANCH=dev $0 ~/code/vibe-kanban
 EOF
   exit 1
 }
@@ -62,7 +61,7 @@ CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$VK_DIR/target}"
 CLEANUP_NEEDED=false
 
 cleanup() {
-  if [[ "$CLEANUP_NEEDED" == "true" && -d "$AUTH_WALL_DIR/.git" ]]; then
+  if [[ "$CLEANUP_NEEDED" == "true" && -d "$AUTH_WALL_DIR" ]]; then
     info "清理 auth-wall 源码..."
     rm -rf "$AUTH_WALL_DIR"
     ok "auth-wall 已从源码目录中移除，源代码保持干净。"
@@ -134,27 +133,29 @@ ok "pnpm: $(pnpm --version)"
 
 echo ""
 
-# ── Step 2: 克隆 auth-wall ──────────────────────────────────────────────────
-info "=== 步骤 2/5：安装 auth-wall 插件 ==="
+# ── Step 2: 复制 auth-wall ──────────────────────────────────────────────────
+info "=== 步骤 2/5：安装 auth-wall 插件（从本地项目复制）==="
 
-if [[ -d "$AUTH_WALL_DIR/.git" ]]; then
-  warn "检测到 $AUTH_WALL_DIR 已存在（含 .git），将更新..."
-  (cd "$AUTH_WALL_DIR" && git fetch origin && git checkout "$AUTH_WALL_BRANCH" && git pull origin "$AUTH_WALL_BRANCH")
-else
-  if [[ -d "$AUTH_WALL_DIR" ]]; then
-    # 目录存在但不是 git 仓库 — 可能是旧的残留
-    warn "$AUTH_WALL_DIR 已存在但非 git 仓库，将备份后重新克隆..."
-    mv "$AUTH_WALL_DIR" "${AUTH_WALL_DIR}.bak.$(date +%s)"
-  fi
-  info "克隆 auth-wall ($AUTH_WALL_BRANCH) -> $AUTH_WALL_DIR ..."
-  git clone --branch "$AUTH_WALL_BRANCH" --depth 1 "$AUTH_WALL_REPO" "$AUTH_WALL_DIR"
+# 验证本地项目包含 auth-wall 源码
+[[ ! -f "$PROJECT_ROOT/Cargo.toml" ]] && fail "在 $PROJECT_ROOT 中找不到 Cargo.toml，无法定位 auth-wall 源码。"
+
+if [[ -d "$AUTH_WALL_DIR" ]]; then
+  warn "$AUTH_WALL_DIR 已存在，将备份后重新复制..."
+  mv "$AUTH_WALL_DIR" "${AUTH_WALL_DIR}.bak.$(date +%s)"
 fi
+
+mkdir -p "$AUTH_WALL_DIR"
+info "复制 auth-wall 源码 -> $AUTH_WALL_DIR ..."
+cp -r "$PROJECT_ROOT/Cargo.toml" "$AUTH_WALL_DIR/"
+cp -r "$PROJECT_ROOT/src" "$AUTH_WALL_DIR/"
+[[ -f "$PROJECT_ROOT/rust-toolchain.toml" ]] && cp "$PROJECT_ROOT/rust-toolchain.toml" "$AUTH_WALL_DIR/"
+[[ -f "$PROJECT_ROOT/rustfmt.toml" ]] && cp "$PROJECT_ROOT/rustfmt.toml" "$AUTH_WALL_DIR/"
 
 CLEANUP_NEEDED=true
 
 # 快速验证 auth-wall crate
-[[ ! -f "$AUTH_WALL_DIR/Cargo.toml" ]] && fail "克隆的 auth-wall 中找不到 Cargo.toml。"
-ok "auth-wall 插件已就位。"
+[[ ! -f "$AUTH_WALL_DIR/Cargo.toml" ]] && fail "复制的 auth-wall 中找不到 Cargo.toml。"
+ok "auth-wall 插件已就位（本地复制）。"
 echo ""
 
 # ── Step 3: 安装前端依赖 ────────────────────────────────────────────────────

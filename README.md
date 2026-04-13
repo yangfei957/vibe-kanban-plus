@@ -62,6 +62,8 @@ vibe-kanban-plus/
 │       ├── Cargo.toml      # 插件 crate 配置
 │       ├── plugin.conf     # 插件构建配置（features、bins）
 │       ├── install.sh      # 插件安装/卸载脚本
+│       ├── 需求文档.md      # 插件需求文档
+│       ├── 部署文档.md      # 插件部署文档
 │       └── src/
 │           ├── lib.rs
 │           ├── password.rs
@@ -70,6 +72,7 @@ vibe-kanban-plus/
 │           └── bin/
 │               └── set_password.rs
 └── docs/
+    └── README.md           # 文档索引（指向各插件文档）
 ```
 
 ### 插件规范
@@ -79,8 +82,10 @@ vibe-kanban-plus/
 | 文件 | 必需 | 说明 |
 |------|------|------|
 | `install.sh` | ✅ | 插件安装/卸载脚本，支持 `install` 和 `uninstall` 两个子命令 |
+| `需求文档.md` | ✅ | 插件的需求文档，描述功能需求、接口规格等 |
 | `plugin.conf` | 推荐 | 声明插件需要的 Cargo features 和额外 bins |
 | `Cargo.toml` | 推荐 | Rust crate 配置（如果插件包含 Rust 代码） |
+| `部署文档.md` | 推荐 | 插件的部署文档，描述安装、配置、运维等 |
 | `src/` | 推荐 | 源代码目录 |
 
 ### 安装流程

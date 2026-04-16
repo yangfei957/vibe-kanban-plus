@@ -1,0 +1,24 @@
+[package]
+name = "auth-wall"
+version = "0.1.0"
+edition = "2024"
+description = "A drop-in authentication gate (password wall) plugin for Axum-based web applications"
+license = "Apache-2.0"
+repository = "https://github.com/yangfei957/vibe-kanban-plus"
+
+[[bin]]
+name = "set-password"
+path = "src/bin/set_password.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+argon2 = "0.5"
+rand = { version = "0.8", features = ["std"] }
+hex = "0.4"
+http = "1"
+tower = { version = "0.5", features = ["util"] }
+directories = "6.0.0"

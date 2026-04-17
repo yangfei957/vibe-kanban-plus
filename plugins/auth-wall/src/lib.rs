@@ -4,6 +4,24 @@ mod session;
 
 use std::{path::PathBuf, sync::Arc};
 
+/// Returns the default password-hash file path, matching what `set-password` uses.
+///
+/// Resolution order:
+/// 1. `AUTH_WALL_PASSWORD_FILE` environment variable (if set)
+/// 2. Platform data directory via the `directories` crate:
+///    - Linux:   `~/.local/share/ai.bloop.vibe-kanban/auth_wall_password.hash`
+///    - macOS:   `~/Library/Application Support/ai.bloop.vibe-kanban/…`
+///    - Windows: `%APPDATA%\bloop\vibe-kanban\data\…`
+/// 3. Relative fallback: `auth_wall_password.hash` (current working directory)
+pub fn default_password_path() -> PathBuf {
+    if let Ok(path) = std::env::var("AUTH_WALL_PASSWORD_FILE") {
+        return PathBuf::from(path);
+    }
+    directories::ProjectDirs::from("ai", "bloop", "vibe-kanban")
+        .map(|d| d.data_dir().join("auth_wall_password.hash"))
+        .unwrap_or_else(|| PathBuf::from("auth_wall_password.hash"))
+}
+
 use axum::{
     Json, Router,
     body::Body,

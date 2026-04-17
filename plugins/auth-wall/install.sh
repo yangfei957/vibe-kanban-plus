@@ -134,6 +134,177 @@ patch_server_cargo_remove() {
     fi
 }
 
+# 找到 server 的 routes/mod.rs
+find_routes_mod() {
+    find "$VK_DIR/crates/server" -path "*/src/routes/mod.rs" 2>/dev/null | head -1
+}
+
+# 在 routes/mod.rs 的最终 Router::new()...into_make_service() 链之前注入
+# auth-wall 中间件（用 begin/end 标记包裹，便于 do_uninstall 精确还原）
+patch_routes_add() {
+    local routes_mod="$1"
+    # 幂等检查
+    if grep -q "vibe-kanban-plus:auth-wall begin" "$routes_mod" 2>/dev/null; then
+        info "routes/mod.rs 已含 auth-wall 中间件注入，跳过。"
+        return 0
+    fi
+    python3 - "$routes_mod" <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+# 匹配 router() 函数末尾的 Router::new()...into_make_service() 链
+# 特征：以 4 空格 Router::new() 开头，以 .into_make_service() 结束，再跟闭合 }
+pattern = re.compile(
+    r'(    Router::new\(\)\n(?:        [^\n]+\n)+        \.into_make_service\(\)\n)',
+    re.MULTILINE
+)
+match = pattern.search(content)
+if not match:
+    print("ERROR: could not find Router::new()...into_make_service() pattern in routes/mod.rs",
+          file=sys.stderr)
+    sys.exit(1)
+
+original_block = match.group(1)
+
+# 将 "    Router::new()" 改为 "    let app = Router::new()"
+# 将 "        .into_make_service()\n" 改为 "        .into_make_service();\n"
+let_app_block = original_block.replace(
+    "    Router::new()\n",
+    "    let app = Router::new()\n",
+    1
+).replace(
+    "        .into_make_service()\n",
+    "        .layer(CompressionLayer::new());\n",
+    1
+# 移除原有重复的 .layer(CompressionLayer::new()) 行（已在上一步改写末尾）
+)
+
+# 实际上原块末尾已有 .layer(CompressionLayer::new()), 我们需要把它变成分号结束
+# 重新做：把 .layer(CompressionLayer::new())\n        .into_make_service() 替换
+let_app_block = original_block.replace(
+    "    Router::new()\n",
+    "    let app = Router::new()\n",
+    1
+)
+let_app_block = re.sub(
+    r'        \.into_make_service\(\)\n$',
+    '',
+    let_app_block
+)
+let_app_block = let_app_block.rstrip('\n')
+# 最后一行是 .layer(CompressionLayer::new()) ，加上分号
+let_app_block = re.sub(r'(        \.layer\(CompressionLayer::new\(\)\))$', r'\1;', let_app_block)
+let_app_block += '\n'
+
+auth_wall_block = (
+    "    // vibe-kanban-plus:auth-wall begin\n"
+    "    #[cfg(feature = \"auth-wall\")]\n"
+    "    let app = {\n"
+    "        let config = auth_wall::AuthWallConfig {\n"
+    "            password_hash_path: auth_wall::default_password_path(),\n"
+    "            ..auth_wall::AuthWallConfig::default()\n"
+    "        };\n"
+    "        let auth_state = auth_wall::AuthWallState::new(config);\n"
+    "        tracing::info!(\n"
+    "            \"Auth-wall enabled. Password hash: {:?}\",\n"
+    "            auth_state.config.password_hash_path\n"
+    "        );\n"
+    "        app\n"
+    "            .merge(auth_wall::auth_wall_routes(auth_state.clone()))\n"
+    "            .layer(axum::middleware::from_fn_with_state(\n"
+    "                auth_state,\n"
+    "                auth_wall::auth_wall_middleware,\n"
+    "            ))\n"
+    "    };\n"
+    "    // vibe-kanban-plus:auth-wall end\n"
+    "    app.into_make_service()\n"
+)
+
+patched_block = let_app_block + auth_wall_block
+
+content = content[:match.start()] + patched_block + content[match.end():]
+with open(path, 'w') as f:
+    f.write(content)
+print("routes/mod.rs patched")
+PYEOF
+    ok "已在 routes/mod.rs 中注入 auth-wall 中间件。"
+}
+
+# 还原 routes/mod.rs 的 auth-wall 注入
+patch_routes_remove() {
+    local routes_mod="$1"
+    if ! grep -q "vibe-kanban-plus:auth-wall begin" "$routes_mod" 2>/dev/null; then
+        return 0
+    fi
+    python3 - "$routes_mod" <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+# 找到 let app = Router::new() ... 到 // vibe-kanban-plus:auth-wall end 的整个区块
+pattern = re.compile(
+    r'    let app = Router::new\(\)\n'
+    r'(?:        [^\n]+\n)+'       # 中间 .route / .nest / .layer 等行
+    r'    // vibe-kanban-plus:auth-wall begin\n'
+    r'.*?'
+    r'    // vibe-kanban-plus:auth-wall end\n'
+    r'    app\.into_make_service\(\)\n',
+    re.DOTALL
+)
+match = pattern.search(content)
+if not match:
+    # 尝试另一种顺序（begin 在 let app 之前）
+    pattern2 = re.compile(
+        r'    // vibe-kanban-plus:auth-wall begin\n'
+        r'    let app = Router::new\(\)\n'
+        r'(?:        [^\n]+\n)+'
+        r'.*?'
+        r'    // vibe-kanban-plus:auth-wall end\n'
+        r'    app\.into_make_service\(\)\n',
+        re.DOTALL
+    )
+    match = pattern2.search(content)
+
+if not match:
+    print("ERROR: could not find auth-wall block in routes/mod.rs", file=sys.stderr)
+    sys.exit(1)
+
+# 从 let app = Router::new() 块中重建原始 Router::new()...into_make_service() 链
+block = match.group(0)
+
+# 提取原始的 router chain 行（在 let app = 和 begin 标记之间的部分）
+chain_match = re.search(
+    r'(?:    // vibe-kanban-plus:auth-wall begin\n)?'
+    r'    let app = (Router::new\(\)\n(?:        [^\n]+\n)+)',
+    block
+)
+if not chain_match:
+    print("ERROR: could not extract original chain", file=sys.stderr)
+    sys.exit(1)
+
+chain_body = chain_match.group(1)
+# 最后一行是 .layer(CompressionLayer::new()); → 去掉分号，加 .into_make_service()
+chain_body = re.sub(
+    r'        (\.layer\(CompressionLayer::new\(\)\));',
+    r'        \1\n        .into_make_service()',
+    chain_body
+)
+# chain_body 已以 \n 结尾（来自最后捕获行），无需再额外添加
+original_block = "    " + chain_body
+
+content = content[:match.start()] + original_block + content[match.end():]
+with open(path, 'w') as f:
+    f.write(content)
+print("routes/mod.rs restored")
+PYEOF
+    info "已还原 routes/mod.rs。"
+}
+
 # ── 参数解析 ────────────────────────────────────────────────────────────────
 usage() { fail "用法: $0 {install|uninstall} <vibe-kanban 源码目录>"; }
 [[ $# -lt 2 ]] && usage
@@ -181,6 +352,15 @@ do_install() {
         info "修补 server Cargo.toml（添加 auth-wall 可选依赖与 feature）..."
         patch_server_cargo_add "$SERVER_CARGO" \
             || warn "未能自动修补 server Cargo.toml，请手动添加 auth-wall optional dep 与 feature。"
+
+        info "修补 server routes/mod.rs（注入 auth-wall 中间件）..."
+        ROUTES_MOD="$(find_routes_mod)"
+        if [[ -n "$ROUTES_MOD" ]]; then
+            patch_routes_add "$ROUTES_MOD" \
+                || warn "未能自动修补 routes/mod.rs，请手动注入 auth-wall 中间件。"
+        else
+            warn "未找到 crates/server/src/routes/mod.rs，请手动注入 auth-wall 中间件。"
+        fi
     else
         warn "未找到 server crate 的 Cargo.toml。如有需要，请手动在 server Cargo.toml 中添加：
   [dependencies]
@@ -198,6 +378,13 @@ do_uninstall() {
     SERVER_CARGO="$(find_server_cargo)"
     if [[ -n "$SERVER_CARGO" ]]; then
         patch_server_cargo_remove "$SERVER_CARGO"
+    fi
+
+    # ── 还原 routes/mod.rs 修补 ──────────────────────────────────────────────
+    ROUTES_MOD="$(find_routes_mod)"
+    if [[ -n "$ROUTES_MOD" ]]; then
+        patch_routes_remove "$ROUTES_MOD" \
+            || warn "还原 routes/mod.rs 失败，请手动检查。"
     fi
 
     # ── 移除源码目录 ──────────────────────────────────────────────────────────

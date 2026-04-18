@@ -196,7 +196,8 @@ check_sys_deps() {
             # 需要检查的关键库 / 命令
             local missing_pkgs=()
             # libclang（bindgen 编译必需）
-            if ! ldconfig -p 2>/dev/null | grep -q libclang; then
+            if ! (ldconfig -p 2>/dev/null | grep -q libclang) \
+                && ! dpkg -s libclang-dev &>/dev/null; then
                 missing_pkgs+=(llvm clang libclang-dev)
             fi
             # build-essential（gcc / make 等）
@@ -217,7 +218,7 @@ check_sys_deps() {
                 info "正在通过 apt 安装..."
                 sudo apt-get update -qq
                 sudo apt-get install -y -qq "${missing_pkgs[@]}" \
-                    || fail "系统依赖安装失败。请手动执行: sudo apt-get install -y ${missing_pkgs[*]}"
+                    || fail "系统依赖安装失败。请手动执行: sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}"
                 ok "系统编译依赖已安装。"
             else
                 ok "系统编译依赖已满足。"

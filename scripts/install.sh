@@ -186,6 +186,67 @@ echo ""
 
 info "=== Phase 1: 检测编译环境 ==="
 
+# --- 系统编译依赖（libclang / build-essential / zip 等） ---
+# bindgen crate 需要 libclang；打包阶段需要 zip
+check_sys_deps() {
+    local OS
+    OS="$(uname -s)"
+    case "$OS" in
+        Linux)
+            # 需要检查的关键库 / 命令
+            local missing_pkgs=()
+            # libclang（bindgen 编译必需）
+            if ! (ldconfig -p 2>/dev/null | grep -q libclang) \
+                && ! dpkg -s libclang-dev &>/dev/null; then
+                missing_pkgs+=(llvm clang libclang-dev)
+            fi
+            # build-essential（gcc / make 等）
+            if ! dpkg -s build-essential &>/dev/null; then
+                missing_pkgs+=(build-essential)
+            fi
+            # libsqlite3（常见 Rust crate 依赖）
+            if ! dpkg -s libsqlite3-dev &>/dev/null; then
+                missing_pkgs+=(libsqlite3-dev)
+            fi
+            # zip（打包阶段需要）
+            if ! command -v zip >/dev/null 2>&1; then
+                missing_pkgs+=(zip)
+            fi
+
+            if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+                warn "缺少系统编译依赖: ${missing_pkgs[*]}"
+                info "正在通过 apt 安装..."
+                sudo apt-get update -qq
+                sudo apt-get install -y -qq "${missing_pkgs[@]}" \
+                    || fail "系统依赖安装失败。请手动执行: sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}"
+                ok "系统编译依赖已安装。"
+            else
+                ok "系统编译依赖已满足。"
+            fi
+            ;;
+        Darwin)
+            # macOS：Xcode CLT 自带 clang / libclang
+            if ! xcode-select -p &>/dev/null; then
+                warn "未检测到 Xcode Command Line Tools，正在安装..."
+                xcode-select --install 2>/dev/null || true
+                info "请在弹窗中确认安装 Xcode CLT，安装完成后重新运行本脚本。"
+                exit 1
+            fi
+            # zip 在 macOS 上通常预装
+            if ! command -v zip >/dev/null 2>&1; then
+                fail "缺少 zip 命令，请安装：brew install zip"
+            fi
+            ok "系统编译依赖已满足 (macOS)。"
+            ;;
+        *)
+            warn "未知操作系统 ($OS)，请自行确保已安装: clang / libclang-dev / zip / build-essential"
+            ;;
+    esac
+}
+
+check_sys_deps
+echo ""
+
 # --- Git ---
 command -v git >/dev/null 2>&1 || fail "缺少 git，请先安装 git。"
 ok "git: $(git --version)"

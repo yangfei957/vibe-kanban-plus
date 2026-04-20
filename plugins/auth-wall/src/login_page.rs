@@ -49,7 +49,8 @@ pub const LOGIN_PAGE_HTML: &str = r##"<!DOCTYPE html>
   .alert-error{background:#450a0a;border:1px solid #991b1b;color:#fca5a5}
   .alert-warn{background:#451a03;border:1px solid #92400e;color:#fed7aa}
   .alert-info{background:#0c4a6e;border:1px solid #0369a1;color:#bae6fd}
-  .footer{text-align:center;margin-top:1.5rem;font-size:.75rem;color:#475569}
+  .footer{text-align:center;margin-top:1.5rem;font-size:.65rem;color:#475569}
+  .footer code{background:#0f172a;padding:2px 6px;border-radius:4px;font-family:monospace;color:#64748b}
 </style>
 </head>
 <body>
@@ -76,7 +77,10 @@ pub const LOGIN_PAGE_HTML: &str = r##"<!DOCTYPE html>
     <button type="submit" id="submit-btn">Sign In</button>
   </form>
 
-  <div class="footer">Protected by Auth Wall Plugin</div>
+  <div class="footer">
+    Protected by Auth Wall Plugin<br>
+    Logout: <code>/auth-wall/api/logout</code>
+  </div>
 </div>
 
 <script>

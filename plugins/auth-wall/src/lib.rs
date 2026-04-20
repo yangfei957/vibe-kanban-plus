@@ -126,7 +126,7 @@ pub fn auth_wall_routes(state: AuthWallState) -> Router {
     Router::new()
         .route("/auth-wall/login", get(login_page_handler))
         .route("/auth-wall/api/login", post(login_handler))
-        .route("/auth-wall/api/logout", post(logout_handler))
+        .route("/auth-wall/api/logout", get(logout_handler).post(logout_handler))
         .route("/auth-wall/api/status", get(status_handler))
         .with_state(state)
 }
